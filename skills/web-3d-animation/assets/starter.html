@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3D Hero</title>
+<style>
+  :root { --bg: #0e0f13; --fg: #f4f4f6; --muted: #9aa0ad; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+  .hero { position: relative; height: 100svh; overflow: hidden; }
+  .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hero .copy {
+    position: relative; z-index: 1; height: 100%;
+    display: flex; flex-direction: column; justify-content: center; gap: 12px;
+    padding: 0 max(16px, 8vw); max-width: 720px; pointer-events: none;
+  }
+  .hero h1 { font-size: clamp(2.2rem, 6vw, 4.5rem); line-height: 1.02; letter-spacing: -0.02em; }
+  .hero p { color: var(--muted); font-size: 1.1rem; }
+  @media (max-width: 767px) {
+    .hero .copy { justify-content: flex-end; padding-bottom: 14svh; }
+  }
+  .fallback { display: none; }
+  .no-webgl .fallback { display: block; }
+</style>
+<!-- Keep both URLs on the same three.js version -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<section class="hero" id="hero">
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="copy">
+    <h1>Your headline here</h1>
+    <p>Replace the torus knot with your own object, model or shader.</p>
+    <p class="fallback">(3D is unavailable on this device.)</p>
+  </div>
+</section>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- Tweakables ----------
+const CONFIG = {
+  color: '#7c6cff',
+  spinSpeed: 0.35,      // rad/s
+  floatAmp: 0.12,       // units
+  parallax: 0.4,        // max tilt (rad)
+  cameraZ: 8,
+  objectOffsetX: 1.9,   // push object right so text has room (set 0 to center)
+};
+
+const canvas = document.getElementById('scene');
+const container = document.getElementById('hero');
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+// ---------- Renderer (with fallback) ----------
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+} catch (e) {
+  document.documentElement.classList.add('no-webgl');
+  throw e;
+}
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+canvas.addEventListener('webglcontextlost', () => document.documentElement.classList.add('no-webgl'));
+
+// ---------- Scene, camera, lights ----------
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+camera.position.set(0, 0, CONFIG.cameraZ);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environment = envTex;
+
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(3, 4, 5);
+scene.add(key);
+
+// ---------- Content: replace this block ----------
+const group = new THREE.Group();     // receives parallax
+const mesh = new THREE.Mesh(         // receives spin + float
+  new THREE.TorusKnotGeometry(1, 0.32, 220, 32),
+  new THREE.MeshPhysicalMaterial({ color: CONFIG.color, roughness: 0.18, metalness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1 })
+);
+group.add(mesh);
+scene.add(group);
+
+// ---------- Layout & resize ----------
+function layout() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  // On narrow screens: center the object in the upper half (text sits below) and pull back
+  const narrow = w < 768;
+  group.position.set(narrow ? 0 : CONFIG.objectOffsetX, narrow ? 1.8 : 0, 0);
+  camera.position.z = narrow ? CONFIG.cameraZ * 1.7 : CONFIG.cameraZ;
+}
+const ro = new ResizeObserver(layout);
+ro.observe(canvas);
+layout();
+
+// ---------- Input ----------
+const pointer = new THREE.Vector2();
+function onPointer(e) {
+  pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+}
+window.addEventListener('pointermove', onPointer, { passive: true });
+
+// ---------- Loop ----------
+const timer = new THREE.Timer();
+timer.connect(document);
+const damp = THREE.MathUtils.damp;
+
+function update(dt, t) {
+  if (reduceMotion.matches) return;  // keep a calm, static composition
+  mesh.rotation.y += dt * CONFIG.spinSpeed;
+  mesh.rotation.x += dt * CONFIG.spinSpeed * 0.3;
+  mesh.position.y = Math.sin(t * 1.1) * CONFIG.floatAmp;
+  group.rotation.x = damp(group.rotation.x, -pointer.y * CONFIG.parallax * 0.6, 5, dt);
+  group.rotation.y = damp(group.rotation.y, pointer.x * CONFIG.parallax, 5, dt);
+}
+
+function frame(time) {
+  timer.update(time);
+  const dt = Math.min(timer.getDelta(), 0.1);
+  update(dt, timer.getElapsed());
+  renderer.render(scene, camera);
+}
+
+// Only render while visible on screen and tab is active
+let onScreen = true;
+function syncLoop() {
+  renderer.setAnimationLoop(onScreen && !document.hidden ? frame : null);
+}
+new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; syncLoop(); }).observe(container);
+document.addEventListener('visibilitychange', syncLoop);
+syncLoop();
+renderer.render(scene, camera); // first frame immediately (also the reduced-motion frame)
+
+// ---------- Cleanup (call on SPA navigation) ----------
+window.disposeHero = () => {
+  renderer.setAnimationLoop(null);
+  ro.disconnect();
+  window.removeEventListener('pointermove', onPointer);
+  scene.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); });
+  envTex.dispose(); pmrem.dispose(); renderer.dispose();
+};
+</script>
+</body>
+</html>
